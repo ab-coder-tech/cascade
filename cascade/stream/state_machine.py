@@ -7,9 +7,13 @@ VAD状态机
 import logging
 import time
 from enum import Enum
+from typing import TYPE_CHECKING
 
 from .collector import SpeechCollector
-from .types import AudioFrame, CascadeResult
+from .types import AudioFrame, CascadeResult, SystemState
+
+if TYPE_CHECKING:
+    from .interruption_manager import InterruptionManager
 
 logger = logging.getLogger(__name__)
 
@@ -30,17 +34,19 @@ class VADStateMachine:
     - {'end': timestamp}: 语音结束
     """
 
-    def __init__(self, instance_id: str):
+    def __init__(self, instance_id: str, interruption_manager: 'InterruptionManager | None' = None):
         """
         初始化VAD状态机
         
         Args:
             instance_id: 实例ID
+            interruption_manager: 打断管理器（可选）
         """
         self.instance_id = instance_id
         self.state = VADState.IDLE
         self.current_collector: SpeechCollector | None = None
         self.segment_counter = 0
+        self.interruption_manager = interruption_manager
 
         logger.debug(f"VADStateMachine {instance_id} 初始化")
 
@@ -133,8 +139,23 @@ class VADStateMachine:
             frame: 包含start VAD结果的帧
             
         Returns:
-            None（开始收集，不立即返回结果）
+            CascadeResult（可能是打断事件）或 None
         """
+        # 通知打断管理器
+        interruption_event = None
+        if self.interruption_manager:
+            interruption_event = self.interruption_manager.on_speech_start(frame.timestamp_ms)
+            
+            # 状态同步卫兵（Gatekeeper）
+            # 如果管理器拒绝进入收集状态（例如间隔太短或策略限制），
+            # 状态机也必须忽略这次语音，防止状态分裂（Zombie State）
+            if self.interruption_manager.get_state() != SystemState.COLLECTING:
+                logger.debug(
+                    f"VADStateMachine {self.instance_id} 忽略语音开始: "
+                    f"Manager状态为 {self.interruption_manager.get_state().value}"
+                )
+                return None
+        
         if self.state == VADState.COLLECTING:
             logger.warning(f"VADStateMachine {self.instance_id} 已在收集状态，忽略新的start")
             return None
@@ -146,6 +167,19 @@ class VADStateMachine:
         self.state = VADState.COLLECTING
 
         logger.info(f"VADStateMachine {self.instance_id} 开始收集语音段 {self.segment_counter}")
+        
+        # 如果有打断事件，返回打断事件；否则返回None
+        if interruption_event:
+            logger.info(f"VADStateMachine {self.instance_id} 检测到打断")
+            return CascadeResult(
+                result_type="interruption",
+                frame=None,
+                segment=None,
+                interruption=interruption_event,
+                processing_time_ms=0.0,
+                instance_id=self.instance_id
+            )
+        
         return None
 
     def _handle_speech_end(self, frame: AudioFrame) -> CascadeResult | None:
@@ -158,6 +192,10 @@ class VADStateMachine:
         Returns:
             语音段结果
         """
+        # 通知打断管理器
+        if self.interruption_manager:
+            self.interruption_manager.on_speech_end(frame.timestamp_ms)
+        
         if self.state != VADState.COLLECTING or not self.current_collector:
             logger.warning(f"VADStateMachine {self.instance_id} 未在收集状态，忽略end")
             return None

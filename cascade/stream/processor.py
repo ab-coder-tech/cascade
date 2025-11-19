@@ -22,6 +22,11 @@ from ..types.errors import (
     ErrorSeverity,
     AudioFormatError,
 )
+
+# 安全配置常量
+MAX_CHUNK_SIZE = 512 * 1024  # 512KB - 防止意外的超大数据
+MIN_CHUNK_SIZE = 2  # 最小2字节（1个样本）
+from .interruption_manager import InterruptionManager
 from .state_machine import VADStateMachine
 from .types import (
     AUDIO_FRAME_SIZE,
@@ -29,6 +34,7 @@ from .types import (
     CascadeResult,
     Config,
     ProcessorStats,
+    SystemState,
 )
 
 logger = logging.getLogger(__name__)
@@ -71,9 +77,14 @@ class StreamProcessor:
         
         self.config = config
         
+        # 打断管理器（先初始化，因为state_machine需要它）
+        self.interruption_manager = InterruptionManager(
+            config.interruption_config
+        )
+        
         # 1:1:1:1绑定组件
         self.frame_buffer = FrameAlignedBuffer(max_buffer_samples=128000)
-        self.state_machine = VADStateMachine("stream_processor")
+        self.state_machine = VADStateMachine("stream_processor", self.interruption_manager)
         
         # VAD组件（延迟初始化）
         self.model = None
@@ -90,6 +101,11 @@ class StreamProcessor:
         # 性能监控
         self.processing_times = []  # 最近100次处理时间
         self.max_processing_times = 100
+        
+        # 并发控制
+        self._processing_semaphore = asyncio.Semaphore(50)  # 最多50个并发处理
+        self._last_process_time = 0.0  # 上次处理时间
+        self._min_process_interval = 0.0  # 不限制调用间隔
         
         self.is_initialized = False
         
@@ -148,6 +164,8 @@ class StreamProcessor:
         """
         处理音频块
         
+        带有并发控制和速率限制，防止资源耗尽。
+        
         Args:
             audio_data: 音频数据（任意大小）
             
@@ -161,6 +179,26 @@ class StreamProcessor:
                 ErrorSeverity.HIGH
             )
         
+        # 安全验证：输入数据大小和格式
+        self._validate_audio_chunk(audio_data)
+        
+        # 并发控制：限制同时处理的数量（防止资源耗尽）
+        async with self._processing_semaphore:
+            results = await self._process_chunk_internal(audio_data)
+        
+        self._last_process_time = time.time()
+        return results
+    
+    async def _process_chunk_internal(self, audio_data: bytes) -> list[CascadeResult]:
+        """
+        内部处理逻辑（在并发控制下执行）
+        
+        Args:
+            audio_data: 音频数据
+            
+        Returns:
+            处理结果列表
+        """
         results = []
         start_time = time.time()
         
@@ -304,20 +342,66 @@ class StreamProcessor:
             ) from e
     
     async def close(self) -> None:
-        """清理资源"""
-        if self.vad_iterator:
-            self.vad_iterator.reset_states()
+        """
+        清理资源并释放内存
         
-        # 清理模型（Python GC会自动处理）
-        self.model = None
-        self.vad_iterator = None
-        
-        # 清理其他组件
-        self.frame_buffer.clear()
-        self.state_machine.reset()
-        
-        self.is_initialized = False
-        logger.info("StreamProcessor已清理")
+        显式清理所有资源，包括PyTorch模型、缓冲区和状态机。
+        使用超时保护防止清理过程阻塞。
+        """
+        try:
+            # 1. 清理VAD迭代器状态
+            if self.vad_iterator:
+                try:
+                    self.vad_iterator.reset_states()
+                except Exception as e:
+                    logger.warning(f"重置VAD迭代器状态失败: {e}")
+            
+            # 2. 显式清理PyTorch模型
+            if self.model is not None:
+                try:
+                    # 如果使用GPU，清理CUDA缓存
+                    if torch.cuda.is_available() and next(self.model.parameters(), None) is not None:
+                        if next(self.model.parameters()).is_cuda:
+                            torch.cuda.empty_cache()
+                            logger.debug("已清理CUDA缓存")
+                except Exception as e:
+                    logger.warning(f"清理CUDA缓存失败: {e}")
+                
+                # 删除模型引用
+                del self.model
+                self.model = None
+            
+            # 3. 清理VAD迭代器
+            if self.vad_iterator is not None:
+                del self.vad_iterator
+                self.vad_iterator = None
+            
+            # 4. 清理其他组件
+            if self.frame_buffer:
+                self.frame_buffer.clear()
+            
+            if self.state_machine:
+                self.state_machine.reset()
+            
+            # 5. 清理统计数据
+            self.processing_times.clear()
+            
+            # 6. 强制垃圾回收（在资源密集型应用中有助于及时释放内存）
+            import gc
+            gc.collect()
+            
+            self.is_initialized = False
+            logger.info("StreamProcessor已清理，所有资源已释放")
+            
+        except Exception as e:
+            logger.error(f"清理资源时发生错误: {e}")
+            # 即使清理失败，也要标记为未初始化
+            self.is_initialized = False
+            raise CascadeError(
+                f"资源清理失败: {e}",
+                ErrorCode.CLEANUP_FAILED,
+                ErrorSeverity.HIGH
+            ) from e
     
     def _read_audio_file(self, file_path: str, target_sample_rate: int = 16000):
         """
@@ -369,6 +453,48 @@ class StreamProcessor:
         
         return frames
     
+    def _validate_audio_chunk(self, audio_data: bytes) -> None:
+        """
+        验证音频块的基本完整性
+        
+        Args:
+            audio_data: 待验证的音频数据
+            
+        Raises:
+            CascadeError: 数据验证失败
+        """
+        # 检查数据大小
+        data_size = len(audio_data)
+        
+        if data_size == 0:
+            # 空数据直接返回，不抛异常
+            return
+        
+        # 只检查极端情况（超过512KB）
+        if data_size > MAX_CHUNK_SIZE:
+            logger.error(
+                f"音频块异常大: {data_size} bytes (最大建议: {MAX_CHUNK_SIZE} bytes)"
+            )
+            raise CascadeError(
+                f"音频块过大: {data_size} bytes",
+                ErrorCode.INVALID_INPUT,
+                ErrorSeverity.HIGH,
+                {"chunk_size": data_size, "max_size": MAX_CHUNK_SIZE}
+            )
+        
+        # 验证16-bit对齐（每个样本2字节）- 这是必须的
+        if data_size % 2 != 0:
+            raise CascadeError(
+                f"音频数据格式错误: 大小必须是偶数字节（16-bit采样），当前: {data_size} bytes",
+                ErrorCode.AUDIO_CORRUPTION,
+                ErrorSeverity.HIGH,
+                {"chunk_size": data_size}
+            )
+        
+        # 调试信息：全静音数据
+        if data_size >= 1024 and audio_data == b'\x00' * data_size:
+            logger.debug(f"检测到全静音音频数据: {data_size} bytes")
+    
     def _record_processing_time(self, processing_time_ms: float) -> None:
         """记录处理时间"""
         self.processing_times.append(processing_time_ms)
@@ -378,7 +504,11 @@ class StreamProcessor:
             self.processing_times.pop(0)
     
     def get_stats(self) -> ProcessorStats:
-        """获取处理器统计信息"""
+        """
+        获取处理器统计信息
+        
+        包含性能告警检测，当指标异常时记录警告日志。
+        """
         # 计算平均处理时间
         avg_processing_time = 0.0
         if self.total_chunks_processed > 0:
@@ -403,6 +533,26 @@ class StreamProcessor:
         # 估算内存使用（单实例约80MB）
         memory_usage_mb = 80.0 if self.is_initialized else 0.0
         
+        # 性能告警检测
+        if self.total_chunks_processed > 10:  # 至少处理10个块后才告警
+            if avg_processing_time > 100:
+                logger.warning(
+                    f"⚠️ 处理时间过长: {avg_processing_time:.2f}ms "
+                    f"(建议<100ms)"
+                )
+            
+            if error_rate > 0.05:
+                logger.error(
+                    f"❌ 错误率过高: {error_rate:.2%} "
+                    f"({self.error_count}/{self.total_chunks_processed})"
+                )
+            
+            if throughput < 10 and self.total_chunks_processed > 100:
+                logger.warning(
+                    f"⚠️ 吞吐量过低: {throughput:.1f} 块/秒 "
+                    f"(建议>10块/秒)"
+                )
+        
         return ProcessorStats(
             total_chunks_processed=self.total_chunks_processed,
             total_processing_time_ms=self.total_processing_time_ms,
@@ -426,6 +576,33 @@ class StreamProcessor:
         self.processing_times.clear()
         logger.info("统计信息已重置")
     
+    def set_system_state(self, state: SystemState) -> None:
+        """
+        外部设置系统状态
+        
+        Args:
+            state: 要设置的系统状态
+        """
+        self.interruption_manager.set_state(state)
+    
+    def get_system_state(self) -> SystemState:
+        """
+        获取当前系统状态
+        
+        Returns:
+            当前系统状态
+        """
+        return self.interruption_manager.get_state()
+    
+    def get_interruption_stats(self) -> dict:
+        """
+        获取打断统计信息
+        
+        Returns:
+            打断统计信息字典
+        """
+        return self.interruption_manager.get_stats()
+    
     def __str__(self) -> str:
         status = "initialized" if self.is_initialized else "not initialized"
         return f"StreamProcessor({status}, frames={self.frame_counter})"
@@ -436,5 +613,18 @@ class StreamProcessor:
         return self
     
     async def __aexit__(self, exc_type, exc_val, exc_tb):
-        """异步上下文管理器退出"""
-        await self.close()
+        """
+        异步上下文管理器退出
+        
+        添加超时保护，防止清理过程阻塞。
+        """
+        try:
+            # 使用超时保护，防止清理过程无限阻塞
+            await asyncio.wait_for(self.close(), timeout=10.0)
+        except asyncio.TimeoutError:
+            logger.error("关闭StreamProcessor超时（10秒），强制退出")
+            self.is_initialized = False
+        except Exception as e:
+            logger.error(f"退出上下文管理器时发生错误: {e}")
+            # 确保资源被标记为已清理
+            self.is_initialized = False

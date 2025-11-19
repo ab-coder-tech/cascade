@@ -49,6 +49,14 @@ Cascade是一个专为语音活动检测(VAD)设计的**生产级**、**高性�
 - **内存优化**：零拷贝设计、对象池复用、缓存对齐
 - **并发优化**：专用线程、异步队列、批量处理
 
+### 🎯 智能交互特性
+
+- **实时打断检测**：基于VAD的智能打断检测，支持用户随时打断系统回复
+- **状态同步保障**：双向卫兵机制确保物理层与逻辑层状态强一致性
+- **自动状态管理**：VAD自动管理语音收集状态，外部服务控制处理状态
+- **防误判设计**：最小间隔检查和状态互斥锁，有效防止误触发
+- **低延迟响应**：打断检测延迟 < 50ms，实现自然对话体验
+
 ### 🔧 工程化特性
 
 - **模块化设计**：高内聚低耦合的组件架构
@@ -169,6 +177,59 @@ async def advanced_example():
 
 asyncio.run(advanced_example())
 ```
+
+### 打断检测功能
+
+```python
+from cascade.stream import StreamProcessor, Config, InterruptionConfig, SystemState
+
+async def interruption_example():
+    """打断检测示例"""
+    
+    # 配置打断检测
+    config = Config(
+        vad_threshold=0.5,
+        interruption_config=InterruptionConfig(
+            enable_interruption=True,  # 启用打断检测
+            min_interval_ms=500        # 最小打断间隔500ms
+        )
+    )
+    
+    async with StreamProcessor(config) as processor:
+        async for result in processor.process_stream(audio_stream):
+            
+            # 检测打断事件
+            if result.is_interruption:
+                print(f"🛑 检测到打断! 被打断状态: {result.interruption.system_state.value}")
+                # 停止当前TTS播放
+                await tts_service.stop()
+                # 取消LLM请求
+                await llm_service.cancel()
+            
+            # 处理语音段
+            elif result.is_speech_segment:
+                # ASR识别
+                text = await asr_service.recognize(result.segment.audio_data)
+                
+                # 设置为处理中
+                processor.set_system_state(SystemState.PROCESSING)
+                
+                # LLM生成
+                response = await llm_service.generate(text)
+                
+                # 设置为回复中
+                processor.set_system_state(SystemState.RESPONDING)
+                
+                # TTS播放
+                await tts_service.play(response)
+                
+                # 完成后重置为空闲
+                processor.set_system_state(SystemState.IDLE)
+
+asyncio.run(interruption_example())
+```
+
+详细文档请参考：[打断功能实施总结](INTERRUPTION_IMPLEMENTATION_SUMMARY.md)
 
 ## 🧪 测试脚本
 

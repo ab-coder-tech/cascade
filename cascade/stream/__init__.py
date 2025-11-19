@@ -28,6 +28,7 @@ Cascade 流式处理器模块
 """
 
 from .collector import SpeechCollector
+from .interruption_manager import InterruptionManager
 from .processor import StreamProcessor
 from .state_machine import VADState, VADStateMachine
 from .types import (
@@ -39,8 +40,11 @@ from .types import (
     AudioFrame,
     CascadeResult,
     Config,
+    InterruptionConfig,
+    InterruptionEvent,
     ProcessorStats,
     SpeechSegment,
+    SystemState,
 )
 
 
@@ -126,6 +130,9 @@ __all__ = [
     "CascadeResult",
     "Config",
     "ProcessorStats",
+    "SystemState",
+    "InterruptionEvent",
+    "InterruptionConfig",
 
     # 常量
     "AUDIO_SAMPLE_RATE",
@@ -139,6 +146,7 @@ __all__ = [
     "VADStateMachine",
     "VADState",
     "StreamProcessor",
+    "InterruptionManager",
 
     # 便捷函数
     "process_audio_stream",

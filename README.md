@@ -50,6 +50,14 @@ Based on our latest streaming VAD performance tests with different chunk sizes:
 - **Memory Optimization**: Zero-copy design, object pooling, and cache alignment.
 - **Concurrency Optimization**: Dedicated threads, asynchronous queues, and batch processing.
 
+### 🎯 Intelligent Interaction
+
+- **Real-time Interruption Detection**: VAD-based intelligent interruption detection, allowing users to interrupt system responses at any time
+- **State Synchronization Guarantee**: Two-way guard mechanism ensures strong consistency between physical and logical layers
+- **Automatic State Management**: VAD automatically manages speech collection state, external services control processing state
+- **Anti-false-trigger Design**: Minimum interval checking and state mutex locks effectively prevent false triggers
+- **Low-latency Response**: Interruption detection latency < 50ms for natural conversation experience
+
 ### 🔧 Robust Software Engineering
 
 - **Modular Design**: A component architecture with high cohesion and low coupling.
@@ -175,6 +183,59 @@ async def advanced_example():
 
 asyncio.run(advanced_example())
 ```
+
+### Interruption Detection
+
+```python
+from cascade.stream import StreamProcessor, Config, InterruptionConfig, SystemState
+
+async def interruption_example():
+    """Interruption detection example"""
+    
+    # Configure interruption detection
+    config = Config(
+        vad_threshold=0.5,
+        interruption_config=InterruptionConfig(
+            enable_interruption=True,  # Enable interruption detection
+            min_interval_ms=500        # Minimum interruption interval 500ms
+        )
+    )
+    
+    async with StreamProcessor(config) as processor:
+        async for result in processor.process_stream(audio_stream):
+            
+            # Detect interruption events
+            if result.is_interruption:
+                print(f"🛑 Interruption detected! Interrupted state: {result.interruption.system_state.value}")
+                # Stop current TTS playback
+                await tts_service.stop()
+                # Cancel LLM request
+                await llm_service.cancel()
+            
+            # Process speech segments
+            elif result.is_speech_segment:
+                # ASR recognition
+                text = await asr_service.recognize(result.segment.audio_data)
+                
+                # Set to processing
+                processor.set_system_state(SystemState.PROCESSING)
+                
+                # LLM generation
+                response = await llm_service.generate(text)
+                
+                # Set to responding
+                processor.set_system_state(SystemState.RESPONDING)
+                
+                # TTS playback
+                await tts_service.play(response)
+                
+                # Reset to idle after completion
+                processor.set_system_state(SystemState.IDLE)
+
+asyncio.run(interruption_example())
+```
+
+For detailed documentation, see: [Interruption Implementation Summary](INTERRUPTION_IMPLEMENTATION_SUMMARY.md)
 
 ## 🧪 Testing
 

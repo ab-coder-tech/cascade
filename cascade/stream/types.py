@@ -4,6 +4,7 @@ Cascade 流式处理器数据类型
 基于VAD状态机设计的数据类型定义。
 """
 
+from enum import Enum
 from typing import Any, Literal
 
 from pydantic import BaseModel, Field
@@ -14,6 +15,55 @@ AUDIO_FRAME_SIZE = 512     # 固定512样本/帧
 AUDIO_FRAME_DURATION_MS = 32.0  # 32ms/帧
 AUDIO_CHANNELS = 1         # 单声道
 AUDIO_SAMPLE_WIDTH = 2     # 16-bit
+
+
+class SystemState(Enum):
+    """系统状态枚举"""
+    IDLE = "idle"                    # 空闲：等待用户输入
+    COLLECTING = "collecting"        # 收集中：用户正在说话（VAD检测到语音）
+    PROCESSING = "processing"        # 处理中：后端正在处理（外部服务设置）
+    RESPONDING = "responding"        # 回复中：正在输出回复（外部服务设置）
+
+
+class InterruptionConfig(BaseModel):
+    """打断检测配置"""
+    
+    enable_interruption: bool = Field(
+        default=True,
+        description="是否启用打断检测"
+    )
+    
+    min_interval_ms: int = Field(
+        default=500,
+        ge=0,
+        le=5000,
+        description="最小打断间隔（防止连续误判）"
+    )
+
+
+class InterruptionEvent(BaseModel):
+    """打断事件"""
+    
+    event_type: Literal["start_interrupt"] = Field(
+        description="事件类型：基于start的打断"
+    )
+    
+    timestamp_ms: float = Field(
+        description="打断发生的时间戳"
+    )
+    
+    system_state: SystemState = Field(
+        description="被打断时的系统状态"
+    )
+    
+    confidence: float = Field(
+        default=1.0,
+        description="打断置信度（start事件固定为1.0）"
+    )
+    
+    state_duration_ms: float = Field(
+        description="当前状态持续时长"
+    )
 
 
 class AudioFrame(BaseModel):
@@ -82,11 +132,12 @@ class CascadeResult(BaseModel):
     """
 
     # 结果类型
-    result_type: Literal["frame", "segment"] = Field(description="结果类型")
+    result_type: Literal["frame", "segment", "interruption"] = Field(description="结果类型")
 
     # 结果数据
     frame: AudioFrame | None = Field(default=None, description="单帧结果")
     segment: SpeechSegment | None = Field(default=None, description="语音段结果")
+    interruption: InterruptionEvent | None = Field(default=None, description="打断事件信息")
 
     # 处理信息
     processing_time_ms: float = Field(description="处理时间(ms)")
@@ -107,6 +158,11 @@ class CascadeResult(BaseModel):
     def is_single_frame(self) -> bool:
         """是否为单帧"""
         return self.result_type == "frame"
+    
+    @property
+    def is_interruption(self) -> bool:
+        """是否为打断事件"""
+        return self.result_type == "interruption"
 
 
 class Config(BaseModel):
@@ -126,8 +182,8 @@ class Config(BaseModel):
 
     # VAD配置
     vad_threshold: float = Field(default=0.5, description="VAD检测阈值", ge=0.0, le=1.0)
-    speech_pad_ms: int = Field(default=100, description="语音段填充时长(ms)")
-    min_silence_duration_ms: int = Field(default=100, description="最小静音时长(ms)")
+    speech_pad_ms: int = Field(default=100, description="语音段填充时长(ms)", ge=0, le=5000)
+    min_silence_duration_ms: int = Field(default=100, description="最小静音时长(ms)", ge=0, le=10000)
 
     # 性能配置
     max_instances: int = Field(default=5, description="最大并发实例数", ge=1, le=20)
@@ -137,6 +193,12 @@ class Config(BaseModel):
     enable_logging: bool = Field(default=True, description="是否启用日志")
     log_level: str = Field(default="INFO", description="日志级别")
     enable_profiling: bool = Field(default=False, description="是否启用性能分析")
+    
+    # 打断配置
+    interruption_config: InterruptionConfig = Field(
+        default_factory=InterruptionConfig,
+        description="打断检测配置"
+    )
 
     class Config:
         extra = "forbid"
