@@ -49,6 +49,14 @@ Cascade是一个专为语音活动检测(VAD)设计的**生产级**、**高性�
 - **内存优化**：零拷贝设计、对象池复用、缓存对齐
 - **并发优化**：专用线程、异步队列、批量处理
 
+### 🎯 智能交互特性
+
+- **实时打断检测**：基于VAD的智能打断检测，支持用户随时打断系统回复
+- **状态同步保障**：双向卫兵机制确保物理层与逻辑层状态强一致性
+- **自动状态管理**：VAD自动管理语音收集状态，外部服务控制处理状态
+- **防误判设计**：最小间隔检查和状态互斥锁，有效防止误触发
+- **低延迟响应**：打断检测延迟 < 50ms，实现自然对话体验
+
 ### 🔧 工程化特性
 
 - **模块化设计**：高内聚低耦合的组件架构
@@ -143,32 +151,84 @@ asyncio.run(basic_example())
 ### 高级配置
 
 ```python
-from cascade.stream import StreamProcessor, create_default_config
+import cascade
 
 async def advanced_example():
     """高级配置示例"""
     
     # 自定义配置
-    config = create_default_config(
+    config = cascade.Config(
         vad_threshold=0.7,          # 较高的检测阈值
-        max_instances=3,            # 最多3个并发实例
-        buffer_size_frames=128      # 较大缓冲区
+        min_silence_duration_ms=100,
+        speech_pad_ms=100
     )
     
     # 使用自定义配置
-    async with StreamProcessor(config) as processor:
+    async with cascade.StreamProcessor(config) as processor:
         # 处理音频流
-        async for result in processor.process_stream(audio_stream, "my-stream"):
+        async for result in processor.process_stream(audio_stream):
             # 处理结果...
             pass
         
         # 获取性能统计
         stats = processor.get_stats()
-        print(f"处理统计: {stats.summary()}")
         print(f"吞吐量: {stats.throughput_chunks_per_second:.1f} 块/秒")
 
 asyncio.run(advanced_example())
 ```
+
+### 打断检测功能
+
+```python
+import cascade
+
+async def interruption_example():
+    """打断检测示例"""
+    
+    # 配置打断检测
+    config = cascade.Config(
+        vad_threshold=0.5,
+        interruption_config=cascade.InterruptionConfig(
+            enable_interruption=True,  # 启用打断检测
+            min_interval_ms=500        # 最小打断间隔500ms
+        )
+    )
+    
+    async with cascade.StreamProcessor(config) as processor:
+        async for result in processor.process_stream(audio_stream):
+            
+            # 检测打断事件
+            if result.is_interruption:
+                print(f"🛑 检测到打断! 被打断状态: {result.interruption.system_state.value}")
+                # 停止当前TTS播放
+                await tts_service.stop()
+                # 取消LLM请求
+                await llm_service.cancel()
+            
+            # 处理语音段
+            elif result.is_speech_segment:
+                # ASR识别
+                text = await asr_service.recognize(result.segment.audio_data)
+                
+                # 设置为处理中
+                processor.set_system_state(cascade.SystemState.PROCESSING)
+                
+                # LLM生成
+                response = await llm_service.generate(text)
+                
+                # 设置为回复中
+                processor.set_system_state(cascade.SystemState.RESPONDING)
+                
+                # TTS播放
+                await tts_service.play(response)
+                
+                # 完成后重置为空闲
+                processor.set_system_state(cascade.SystemState.IDLE)
+
+asyncio.run(interruption_example())
+```
+
+详细文档请参考：[打断功能实施总结](INTERRUPTION_IMPLEMENTATION_SUMMARY.md)
 
 ## 🧪 测试脚本
 
@@ -247,9 +307,11 @@ pnpm install && pnpm dev
 stats = processor.get_stats()
 
 # 关键监控指标
-print(f"活跃实例数: {stats.active_instances}/{stats.total_instances}")
-print(f"平均处理时间: {stats.average_processing_time_ms}ms")
-print(f"处理成功率: {stats.success_rate:.2%}")
+print(f"总处理块数: {stats.total_chunks_processed}")
+print(f"平均处理时间: {stats.average_processing_time_ms:.2f}ms")
+print(f"吞吐量: {stats.throughput_chunks_per_second:.1f} 块/秒")
+print(f"语音段数: {stats.speech_segments}")
+print(f"错误率: {stats.error_rate:.2%}")
 print(f"内存使用: {stats.memory_usage_mb:.1f}MB")
 ```
 

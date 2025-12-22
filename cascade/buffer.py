@@ -47,19 +47,32 @@ class FrameAlignedBuffer:
         
         Args:
             audio_data: 音频数据（任意大小）
+        
+        Raises:
+            BufferError: 缓冲区溢出时抛出异常
         """
         if not audio_data:
             return
 
+        # 检查写入后是否会溢出
+        new_size = len(self._data) + len(audio_data)
+        if new_size > self._max_buffer_size:
+            # 记录错误并抛出异常，而不是静默截断
+            logger.error(
+                f"缓冲区即将溢出: 当前={len(self._data)}B, "
+                f"写入={len(audio_data)}B, "
+                f"总计={new_size}B, "
+                f"最大={self._max_buffer_size}B"
+            )
+            # 紧急情况：清空缓冲区以避免数据损坏
+            self._data = b''
+            logger.warning("已清空缓冲区以防止数据损坏")
+            # 继续写入新数据
+            self._data = audio_data
+            return
+
         # 使用bytes连接，比bytearray.extend()更高效
         self._data += audio_data
-
-        # 简化的溢出保护：截断过长的数据
-        if len(self._data) > self._max_buffer_size:
-            # 保留后半部分数据，避免复杂的LRU处理
-            keep_size = self._max_buffer_size // 2
-            self._data = self._data[-keep_size:]
-            logger.warning(f"缓冲区溢出，截断到{keep_size}字节")
 
     def has_complete_frame(self) -> bool:
         """
