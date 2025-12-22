@@ -124,20 +124,18 @@ jobs:
         tag_name: v${{ steps.get_version.outputs.version }}
         name: Release v${{ steps.get_version.outputs.version }}
         body: |
-          Cascade v${{ steps.get_version.outputs.version }} Release
-          
           ## Installation
           ```bash
           pip install cascade-vad==${{ steps.get_version.outputs.version }}
           ```
           
-          ## Changes
-          This release was automatically built from the master branch.
+          ## What's Changed
+          See [CHANGELOG](https://github.com/xucailiang/cascade/blob/master/CHANGELOG.md) for details.
+          
+          **Full Changelog**: https://github.com/xucailiang/cascade/compare/v${{ steps.get_version.outputs.version }}...master
           
           ## Build Info
-          - Commit: ${{ github.sha }}
-          - Build Date: ${{ github.event.head_commit.timestamp }}
-          - Workflow: ${{ github.workflow }}
+          - Commit: [`${{ github.sha }}`](https://github.com/xucailiang/cascade/commit/${{ github.sha }})
           - Build ID: ${{ steps.build_info.outputs.build_id }}
         draft: false
         prerelease: false
@@ -145,3 +143,4 @@ jobs:
         token: ${{ secrets.GITHUB_TOKEN }}
         fail_on_unmatched_files: false
         make_latest: true
+        generate_release_notes: true

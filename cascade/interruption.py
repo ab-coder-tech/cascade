@@ -162,3 +162,6 @@ class InterruptionManager:
         self.state_start_time = time.time() * 1000  # ms
         
         logger.info(f"状态转换: {old_state.value} → {new_state.value}")
+
+
+__all__ = ["InterruptionManager"]

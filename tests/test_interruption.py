@@ -18,8 +18,8 @@ import unittest
 from unittest.mock import MagicMock, patch
 
 import cascade
-from cascade.stream.interruption_manager import InterruptionManager
-from cascade.stream.types import (
+from cascade import (
+    InterruptionManager,
     InterruptionConfig,
     InterruptionEvent,
     SystemState,

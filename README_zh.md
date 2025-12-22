@@ -151,28 +151,27 @@ asyncio.run(basic_example())
 ### 高级配置
 
 ```python
-from cascade.stream import StreamProcessor, create_default_config
+import cascade
 
 async def advanced_example():
     """高级配置示例"""
     
     # 自定义配置
-    config = create_default_config(
+    config = cascade.Config(
         vad_threshold=0.7,          # 较高的检测阈值
-        max_instances=3,            # 最多3个并发实例
-        buffer_size_frames=128      # 较大缓冲区
+        min_silence_duration_ms=100,
+        speech_pad_ms=100
     )
     
     # 使用自定义配置
-    async with StreamProcessor(config) as processor:
+    async with cascade.StreamProcessor(config) as processor:
         # 处理音频流
-        async for result in processor.process_stream(audio_stream, "my-stream"):
+        async for result in processor.process_stream(audio_stream):
             # 处理结果...
             pass
         
         # 获取性能统计
         stats = processor.get_stats()
-        print(f"处理统计: {stats.summary()}")
         print(f"吞吐量: {stats.throughput_chunks_per_second:.1f} 块/秒")
 
 asyncio.run(advanced_example())
@@ -181,21 +180,21 @@ asyncio.run(advanced_example())
 ### 打断检测功能
 
 ```python
-from cascade.stream import StreamProcessor, Config, InterruptionConfig, SystemState
+import cascade
 
 async def interruption_example():
     """打断检测示例"""
     
     # 配置打断检测
-    config = Config(
+    config = cascade.Config(
         vad_threshold=0.5,
-        interruption_config=InterruptionConfig(
+        interruption_config=cascade.InterruptionConfig(
             enable_interruption=True,  # 启用打断检测
             min_interval_ms=500        # 最小打断间隔500ms
         )
     )
     
-    async with StreamProcessor(config) as processor:
+    async with cascade.StreamProcessor(config) as processor:
         async for result in processor.process_stream(audio_stream):
             
             # 检测打断事件
@@ -212,19 +211,19 @@ async def interruption_example():
                 text = await asr_service.recognize(result.segment.audio_data)
                 
                 # 设置为处理中
-                processor.set_system_state(SystemState.PROCESSING)
+                processor.set_system_state(cascade.SystemState.PROCESSING)
                 
                 # LLM生成
                 response = await llm_service.generate(text)
                 
                 # 设置为回复中
-                processor.set_system_state(SystemState.RESPONDING)
+                processor.set_system_state(cascade.SystemState.RESPONDING)
                 
                 # TTS播放
                 await tts_service.play(response)
                 
                 # 完成后重置为空闲
-                processor.set_system_state(SystemState.IDLE)
+                processor.set_system_state(cascade.SystemState.IDLE)
 
 asyncio.run(interruption_example())
 ```
@@ -308,9 +307,11 @@ pnpm install && pnpm dev
 stats = processor.get_stats()
 
 # 关键监控指标
-print(f"活跃实例数: {stats.active_instances}/{stats.total_instances}")
-print(f"平均处理时间: {stats.average_processing_time_ms}ms")
-print(f"处理成功率: {stats.success_rate:.2%}")
+print(f"总处理块数: {stats.total_chunks_processed}")
+print(f"平均处理时间: {stats.average_processing_time_ms:.2f}ms")
+print(f"吞吐量: {stats.throughput_chunks_per_second:.1f} 块/秒")
+print(f"语音段数: {stats.speech_segments}")
+print(f"错误率: {stats.error_rate:.2%}")
 print(f"内存使用: {stats.memory_usage_mb:.1f}MB")
 ```
 

@@ -9,9 +9,7 @@ Cascade是一个专为语音活动检测(VAD)设计的高性能、低延迟音�
 - 语音段检测: 自动检测和收集完整语音段
 - 异步设计: 基于asyncio的高并发处理能力
 - 低延迟: 优化的缓冲区和处理流程
-- 多格式支持: WAV和MP3格式，16kHz采样率
-- 多后端支持: ONNX和Silero VAD后端
-- 简洁API: 符合现代Python异步编程习惯
+- 打断检测: 支持用户语音打断检测
 
 快速开始:
     >>> import cascade
@@ -29,7 +27,7 @@ Cascade是一个专为语音活动检测(VAD)设计的高性能、低延迟音�
 """
 
 # 版本信息
-__version__ = "0.2.0"
+__version__ = "2.0.0"
 __author__ = "Xucailiang"
 __license__ = "MIT"
 __email__ = "xucailiang.ai@gmail.com"
@@ -41,62 +39,43 @@ import sys
 
 logger = logging.getLogger(__name__)
 
-# 核心模块导入
-# 流式处理器模块导入
-from .stream import (
-    AUDIO_FRAME_DURATION_MS,
-    AUDIO_FRAME_SIZE,
+# 从新的扁平化模块导入核心类型
+from .types import (
     # 常量
     AUDIO_SAMPLE_RATE,
-    # 数据类型
-    AudioFrame,
-    CascadeResult,
+    AUDIO_FRAME_SIZE,
+    AUDIO_FRAME_DURATION_MS,
+    AUDIO_CHANNELS,
+    AUDIO_SAMPLE_WIDTH,
+    # 枚举
+    SystemState,
+    # 配置
     Config,
-    ProcessorStats,
+    InterruptionConfig,
+    # 数据模型
+    AudioFrame,
     SpeechSegment,
-    # 便捷函数
-    create_default_config,
-    create_stream_processor,
-    process_audio_chunk,
-    process_audio_stream,
+    CascadeResult,
+    InterruptionEvent,
+    ProcessorStats,
 )
 
-# 确保StreamProcessor可以从cascade模块直接导入
-from .stream.processor import StreamProcessor as StreamProcessor
-from .types import (
-    # 数据类型
-    AudioChunk,
-    # 配置类型
-    AudioConfig,
-    # 枚举类型
-    AudioFormat,
+# 从新模块导入组件
+from .buffer import FrameAlignedBuffer
+from .interruption import InterruptionManager
+
+# 从新的 errors 模块导入异常类
+from .errors import (
+    ErrorCode,
+    ErrorSeverity,
+    CascadeError,
     AudioFormatError,
     BufferError,
-    # 异常类型
-    CascadeError,
-    PerformanceMetrics,
-    ProcessingMode,
-    VADBackend,
-    VADConfig,
-    VADProcessingError,
-    VADResult,
 )
 
+# 从新的 processor 模块导入核心处理器
+from .processor import StreamProcessor, VADState, VADStateMachine, SpeechCollector
 
-# 主要组件延迟导入
-def __getattr__(name: str):
-    """延迟导入主要组件"""
-    if name == "AudioFormatProcessor":
-        from .formats import AudioFormatProcessor
-        return AudioFormatProcessor
-    elif name == "FrameAlignedBuffer":
-        from .buffer import FrameAlignedBuffer
-        return FrameAlignedBuffer
-    elif name == "process_audio_file":
-        # 支持直接导入函数
-        return process_audio_file
-    else:
-        raise AttributeError(f"module '{__name__}' has no attribute '{name}'")
 
 # 公开API
 __all__ = [
@@ -106,50 +85,63 @@ __all__ = [
     # 核心处理器
     "StreamProcessor",
 
-    # 配置类型
+    # 配置
     "Config",
-    "AudioConfig",
-    "VADConfig",
+    "InterruptionConfig",
 
     # 数据类型
-    "AudioChunk",
     "AudioFrame",
     "SpeechSegment",
     "CascadeResult",
-    "VADResult",
-    "PerformanceMetrics",
     "ProcessorStats",
+    "SystemState",
+    "InterruptionEvent",
 
-    # 枚举类型
-    "AudioFormat",
-    "VADBackend",
-    "ProcessingMode",
-
-    # 辅助模块（高级用法）
-    "AudioFormatProcessor",
+    # 组件
     "FrameAlignedBuffer",
+    "InterruptionManager",
+    "VADStateMachine",
+    "VADState",
+    "SpeechCollector",
 
-    # 异常类型
+    # 异常
     "CascadeError",
+    "ErrorCode",
+    "ErrorSeverity",
     "AudioFormatError",
     "BufferError",
-    "VADProcessingError",
 
     # 便捷函数
-    "process_audio_stream",
-    "process_audio_chunk",
-    "process_audio_file",
-    "create_default_config",
-    "create_stream_processor",
     "create_processor",
+    "create_default_config",
+    "process_audio_file",
 
     # 常量
     "AUDIO_SAMPLE_RATE",
     "AUDIO_FRAME_SIZE",
     "AUDIO_FRAME_DURATION_MS",
+    "AUDIO_CHANNELS",
+    "AUDIO_SAMPLE_WIDTH",
 ]
 
-# 工厂函数
+
+# 便捷函数
+def create_default_config(**kwargs) -> Config:
+    """
+    创建默认配置
+    
+    Args:
+        **kwargs: 配置参数覆盖
+        
+    Returns:
+        配置对象
+        
+    Example:
+        config = cascade.create_default_config(vad_threshold=0.7)
+    """
+    return Config(**kwargs)
+
+
 def create_processor(**kwargs) -> StreamProcessor:
     """
     创建流式处理器的工厂函数
@@ -158,7 +150,6 @@ def create_processor(**kwargs) -> StreamProcessor:
         **kwargs: 配置参数，覆盖默认值
             - vad_threshold: float = 0.5 (VAD检测阈值)
             - max_instances: int = 5 (最大并发实例数)
-            - buffer_size_seconds: float = 2.0 (缓冲区大小)
             - sample_rate: int = 16000 (采样率)
             
     Returns:
@@ -174,11 +165,10 @@ def create_processor(**kwargs) -> StreamProcessor:
             max_instances=3
         )
     """
-    # 创建配置，支持参数覆盖
     config = create_default_config(**kwargs)
     return StreamProcessor(config)
 
-# 便捷函数
+
 async def process_audio_file(file_path_or_data, **kwargs):
     """
     处理音频文件的便捷函数（异步迭代器）
@@ -198,19 +188,16 @@ async def process_audio_file(file_path_or_data, **kwargs):
         ...         print(f"单帧: {result.frame.timestamp_ms:.0f}ms")
     """
     try:
-
         processor = create_processor(**kwargs)
-
-        # 使用processor的process_file方法进行处理
         async for result in processor.process_file(str(file_path_or_data)):
             yield result
     except Exception as e:
         raise AudioFormatError(f"音频处理失败: {e}") from e
 
+
 # 兼容性检查
 def check_compatibility() -> dict:
     """检查系统兼容性"""
-
     compatibility_info = {
         "python_version": sys.version,
         "platform": platform.platform(),
@@ -229,10 +216,10 @@ def check_compatibility() -> dict:
 
     return compatibility_info
 
+
 # 调试信息
 def get_debug_info() -> dict:
     """获取调试信息"""
-
     debug_info = {
         "version": __version__,
         "python_version": sys.version,
@@ -242,13 +229,6 @@ def get_debug_info() -> dict:
     }
 
     # 检查可用后端
-    try:
-        import onnxruntime
-        debug_info["available_backends"].append("onnx")
-        debug_info["dependencies"]["onnxruntime"] = onnxruntime.__version__
-    except ImportError:
-        pass
-
     try:
         import torch
         debug_info["available_backends"].append("silero")

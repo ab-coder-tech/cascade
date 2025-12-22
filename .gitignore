@@ -254,3 +254,4 @@ cascade_data/
 speech_segments/
 stream_speech_segments/
 node_modules/
+.kiro/

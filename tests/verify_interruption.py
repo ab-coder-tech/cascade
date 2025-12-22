@@ -23,11 +23,11 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-from cascade.stream import (
+from cascade import (
     Config, InterruptionConfig, StreamProcessor, SystemState
 )
 
-AUDIO_FILE = "/home/justin/workspace/cascade/我现在开始录音，理论上会有两个文件.wav"
+AUDIO_FILE = "../我现在开始录音，理论上会有两个文件.wav"
 
 async def main():
     print("\n=== 开始打断功能验证 ===")

@@ -257,3 +257,24 @@ class ProcessorStats(BaseModel):
         return (f"处理了{self.total_chunks_processed}个块, "
                 f"语音段{self.speech_segments}个, "
                 f"平均处理时间{self.average_processing_time_ms:.1f}ms")
+
+
+__all__ = [
+    # 常量
+    "AUDIO_SAMPLE_RATE",
+    "AUDIO_FRAME_SIZE",
+    "AUDIO_FRAME_DURATION_MS",
+    "AUDIO_CHANNELS",
+    "AUDIO_SAMPLE_WIDTH",
+    # 枚举
+    "SystemState",
+    # 配置
+    "InterruptionConfig",
+    "Config",
+    # 数据模型
+    "InterruptionEvent",
+    "AudioFrame",
+    "SpeechSegment",
+    "CascadeResult",
+    "ProcessorStats",
+]

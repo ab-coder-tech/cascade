@@ -157,28 +157,27 @@ asyncio.run(basic_example())
 ### Advanced Configuration
 
 ```python
-from cascade.stream import StreamProcessor, create_default_config
+import cascade
 
 async def advanced_example():
     """An advanced configuration example."""
     
     # Custom configuration
-    config = create_default_config(
+    config = cascade.Config(
         vad_threshold=0.7,          # Higher detection threshold
-        max_instances=3,            # Max 3 concurrent instances
-        buffer_size_frames=128      # Larger buffer
+        min_silence_duration_ms=100,
+        speech_pad_ms=100
     )
     
     # Use the custom config
-    async with StreamProcessor(config) as processor:
+    async with cascade.StreamProcessor(config) as processor:
         # Process audio stream
-        async for result in processor.process_stream(audio_stream, "my-stream"):
+        async for result in processor.process_stream(audio_stream):
             # Process results...
             pass
         
         # Get performance statistics
         stats = processor.get_stats()
-        print(f"Processing Stats: {stats.summary()}")
         print(f"Throughput: {stats.throughput_chunks_per_second:.1f} chunks/sec")
 
 asyncio.run(advanced_example())
@@ -187,21 +186,21 @@ asyncio.run(advanced_example())
 ### Interruption Detection
 
 ```python
-from cascade.stream import StreamProcessor, Config, InterruptionConfig, SystemState
+import cascade
 
 async def interruption_example():
     """Interruption detection example"""
     
     # Configure interruption detection
-    config = Config(
+    config = cascade.Config(
         vad_threshold=0.5,
-        interruption_config=InterruptionConfig(
+        interruption_config=cascade.InterruptionConfig(
             enable_interruption=True,  # Enable interruption detection
             min_interval_ms=500        # Minimum interruption interval 500ms
         )
     )
     
-    async with StreamProcessor(config) as processor:
+    async with cascade.StreamProcessor(config) as processor:
         async for result in processor.process_stream(audio_stream):
             
             # Detect interruption events
@@ -218,19 +217,19 @@ async def interruption_example():
                 text = await asr_service.recognize(result.segment.audio_data)
                 
                 # Set to processing
-                processor.set_system_state(SystemState.PROCESSING)
+                processor.set_system_state(cascade.SystemState.PROCESSING)
                 
                 # LLM generation
                 response = await llm_service.generate(text)
                 
                 # Set to responding
-                processor.set_system_state(SystemState.RESPONDING)
+                processor.set_system_state(cascade.SystemState.RESPONDING)
                 
                 # TTS playback
                 await tts_service.play(response)
                 
                 # Reset to idle after completion
-                processor.set_system_state(SystemState.IDLE)
+                processor.set_system_state(cascade.SystemState.IDLE)
 
 asyncio.run(interruption_example())
 ```
@@ -314,9 +313,11 @@ For detailed setup instructions, see [Web Demo Documentation](web_demo/README.md
 stats = processor.get_stats()
 
 # Key monitoring metrics
-print(f"Active Instances: {stats.active_instances}/{stats.total_instances}")
-print(f"Average Processing Time: {stats.average_processing_time_ms}ms")
-print(f"Success Rate: {stats.success_rate:.2%}")
+print(f"Total Chunks Processed: {stats.total_chunks_processed}")
+print(f"Average Processing Time: {stats.average_processing_time_ms:.2f}ms")
+print(f"Throughput: {stats.throughput_chunks_per_second:.1f} chunks/sec")
+print(f"Speech Segments: {stats.speech_segments}")
+print(f"Error Rate: {stats.error_rate:.2%}")
 print(f"Memory Usage: {stats.memory_usage_mb:.1f}MB")
 ```
 
