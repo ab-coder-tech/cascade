@@ -1,8 +1,9 @@
-import React, { useState, useCallback, useMemo } from 'react';
+import { useState, useCallback } from 'react';
 import VADConfig from './components/VADConfig';
 import SpeechSegmentList from './components/SpeechSegmentList';
 import useWebSocket from './hooks/useWebSocket';
 import useAudioRecorder from './hooks/useAudioRecorder';
+import { SERVER_CONFIG, DEFAULT_VAD_CONFIG } from './config';
 
 /**
  * Cascade VAD演示应用 (v3 - 终极简化版)
@@ -12,12 +13,7 @@ const App = () => {
   const [clientId, setClientId] = useState(null);
   const [connectionStatus, setConnectionStatus] = useState('未连接');
   const [isSessionActive, setIsSessionActive] = useState(false);
-  const [vadConfig, setVadConfig] = useState({
-    vad_threshold: 0.5,
-    speech_pad_ms: 100,
-    min_silence_duration_ms: 100,
-    sample_rate: 16000
-  });
+  const [vadConfig, setVadConfig] = useState(DEFAULT_VAD_CONFIG);
 
   const [segments, setSegments] = useState([]);
   const [error, setError] = useState(null);
@@ -62,7 +58,7 @@ const App = () => {
     disconnect,
     sendMessage,
     sendBinary,
-  } = useWebSocket('ws://localhost:8000/ws/new', {
+  } = useWebSocket(SERVER_CONFIG.WS_URL, {
     onMessage: handleWsMessage,
     onClose: handleWsClose,
     onError: () => setConnectionStatus('连接错误'),
